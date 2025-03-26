@@ -9,6 +9,7 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -182,30 +183,33 @@ class PrinterManager(context: Context) {
         var successCount = 0
         var failCount = 0
 
-        for (index in commands.indices) {
-            val command = commands[index]
-            Log.d(
-                AppConstants.LogTags.PRINTER_MANAGER,
-                "Sending command ${index + 1}/${commands.size}"
-            )
+        try {
+            for (index in commands.indices) {
+                val command = commands[index]
+                Log.d(
+                    AppConstants.LogTags.PRINTER_MANAGER,
+                    "Sending command ${index + 1}/${commands.size}"
+                )
 
-            val sent = connection.bulkTransfer(
-                endpoint,
-                command,
-                command.size,
-                AppConstants.Timing.TIMEOUT_COMMAND
-            )
-            if (sent < 0) {
-                failCount++
-            } else {
-                successCount++
+                val sent = sendPrinterCommand(
+                    connection,
+                    endpoint,
+                    command,
+                    AppConstants.Timing.TIMEOUT_COMMAND
+                )
+
+                if (sent < 0) {
+                    failCount++
+                } else {
+                    successCount++
+                }
+
+                delay(AppConstants.Timing.DELAY_COMMANDS)
             }
-
-            Thread.sleep(AppConstants.Timing.DELAY_COMMANDS)
+        } finally {
+            connection.releaseInterface(usbInterface)
+            connection.close()
         }
-
-        connection.releaseInterface(usbInterface)
-        connection.close()
 
         val success = failCount == 0
         val message = when {
@@ -248,43 +252,60 @@ class PrinterManager(context: Context) {
      * @param connection USB connection to printer
      * @param endpoint Output endpoint for sending commands
      */
-    private fun initializePrinter(connection: UsbDeviceConnection, endpoint: UsbEndpoint) {
+    private suspend fun initializePrinter(connection: UsbDeviceConnection, endpoint: UsbEndpoint) {
         try {
             Log.d(AppConstants.LogTags.PRINTER_MANAGER, AppConstants.Messages.DEBUG_PRINTER_INIT)
 
             // Reset printer to clear buffer and previous settings
-            connection.bulkTransfer(
-                endpoint,
-                AppConstants.PrinterCommands.CMD_RESET,
-                AppConstants.PrinterCommands.CMD_RESET.size,
+            sendPrinterCommand(
+                connection, endpoint, AppConstants.PrinterCommands.CMD_RESET,
                 AppConstants.Timing.TIMEOUT_RESET
             )
-            Thread.sleep(AppConstants.Timing.DELAY_INIT)
+            delay(AppConstants.Timing.DELAY_INIT)
 
             // Set line spacing for consistent output
-            connection.bulkTransfer(
-                endpoint,
-                AppConstants.PrinterCommands.CMD_LINE_SPACING,
-                AppConstants.PrinterCommands.CMD_LINE_SPACING.size,
+            sendPrinterCommand(
+                connection, endpoint, AppConstants.PrinterCommands.CMD_LINE_SPACING,
                 AppConstants.Timing.TIMEOUT_OTHER_COMMANDS
             )
 
             // Set character set to PC437 (standard US/European characters)
-            connection.bulkTransfer(
-                endpoint,
-                AppConstants.PrinterCommands.CMD_CHARSET_PC437,
-                AppConstants.PrinterCommands.CMD_CHARSET_PC437.size,
+            sendPrinterCommand(
+                connection, endpoint, AppConstants.PrinterCommands.CMD_CHARSET_PC437,
                 AppConstants.Timing.TIMEOUT_OTHER_COMMANDS
             )
 
             // Allow time for printer to process initialization
-            Thread.sleep(AppConstants.Timing.DELAY_INIT)
+            delay(AppConstants.Timing.DELAY_INIT)
         } catch (e: Exception) {
             Log.w(
                 AppConstants.LogTags.PRINTER_MANAGER,
                 "Printer initialization exception: ${e.message}"
             )
         }
+    }
+
+    /**
+     * Sends a single command to the printer.
+     *
+     * @param connection USB connection to the printer
+     * @param endpoint Endpoint for sending commands
+     * @param command Command to send
+     * @param timeout Timeout for the operation in milliseconds
+     * @return Number of bytes sent or -1 if an error occurs
+     */
+    private fun sendPrinterCommand(
+        connection: UsbDeviceConnection,
+        endpoint: UsbEndpoint,
+        command: ByteArray,
+        timeout: Int
+    ): Int {
+        return connection.bulkTransfer(
+            endpoint,
+            command,
+            command.size,
+            timeout
+        )
     }
 
     /**

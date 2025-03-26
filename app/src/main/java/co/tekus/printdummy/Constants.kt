@@ -60,6 +60,8 @@ object AppConstants {
      */
     object LogTags {
         const val PRINTER_MANAGER = "PrinterManager"
+
+        const val PRINTER_VIEW_MODEL = "PrinterViewModel"
         const val MAIN_ACTIVITY = "MainActivity"
     }
 
@@ -88,7 +90,13 @@ object AppConstants {
             "Using unprotected broadcast receiver on older Android version"
         const val DEBUG_PRINTER_INIT = "Initializing printer..."
         const val DEBUG_PRINTING_TO = "Attempting to print to: %s"
-        const val DEBUG_IS_PM801 = "Is PM-801 printer: %b"
+
+        const val USB_PERMISSION_GRANTED = "Permiso USB concedido para dispositivo: %s (%s)"
+
+        const val USB_PERMISSION_DENIED = "Permiso USB denegado para dispositivo: %s (%s)"
+
+        const val UNKOWN = "Desconocido"
+
     }
 
     /**

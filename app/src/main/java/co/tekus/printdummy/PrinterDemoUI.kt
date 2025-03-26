@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import co.tekus.printdummy.model.PrinterUiState
 
 /**
  * Composable that creates the main UI for the printer demo application.
@@ -43,15 +44,7 @@ import androidx.compose.ui.unit.dp
  * @param scanForUsbDevices Callback function to trigger USB device scanning
  */
 @Composable
-fun PrinterDemoUI(
-    serialPorts: Int,
-    printSample: () -> Unit,
-    scanForUsbDevices: () -> Unit,
-    // Nuevos parámetros
-    devices: List<UsbDevice> = emptyList(),
-    selectedDevice: UsbDevice? = null,
-    onDeviceSelected: (UsbDevice) -> Unit = {}
-) {
+fun PrinterDemoUI(uiState: PrinterUiState) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -70,7 +63,7 @@ fun PrinterDemoUI(
             )
 
             Button(
-                onClick = { printSample() },
+                onClick = { uiState.onPrintSample() },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)
@@ -81,7 +74,7 @@ fun PrinterDemoUI(
             Spacer(modifier = Modifier.height(16.dp))
 
             Button(
-                onClick = { scanForUsbDevices() },
+                onClick = { uiState.onScanForUsbDevices() },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)
@@ -92,17 +85,17 @@ fun PrinterDemoUI(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Connected devices: $serialPorts",
+                text = "Connected devices: ${uiState.serialPorts}",
                 style = MaterialTheme.typography.bodyMedium
             )
 
             // Mostrar el dropdown solo si hay múltiples dispositivos
-            if (devices.size > 1) {
+            if (uiState.devices.size > 1) {
                 Spacer(modifier = Modifier.height(16.dp))
                 DeviceSelectionDropdown(
-                    devices = devices,
-                    selectedDevice = selectedDevice,
-                    onDeviceSelected = onDeviceSelected
+                    devices = uiState.devices,
+                    selectedDevice = uiState.selectedDevice,
+                    onDeviceSelected = uiState.onDeviceSelected
                 )
             }
         }
