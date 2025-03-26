@@ -36,8 +36,6 @@ class MainActivity : ComponentActivity() {
 
         usbPermissionHandler.register()
 
-
-
         // Observe print status changes
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
