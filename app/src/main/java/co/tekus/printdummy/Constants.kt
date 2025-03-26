@@ -20,6 +20,7 @@ object AppConstants {
         const val PRINTER_NAME_PRN = "PRN"
         const val PRINTER_NAME_PM801 = "PM-801"
         const val PRINTER_NAME_VIRTUAL_PRN = "Virtual PRN"
+
     }
 
     /**
@@ -31,9 +32,6 @@ object AppConstants {
         val CMD_NORMAL_TEXT = byteArrayOf(0x1B, 0x21, 0x00)       // ESC ! 0 - Normal text
         val CMD_LINE_SPACING = byteArrayOf(0x1B, 0x33, 24)        // ESC 3 n - Set line spacing
         val CMD_CHARSET_PC437 = byteArrayOf(0x1B, 0x74, 0x00)     // ESC t 0 - Character code PC437
-
-        // Line feed and paper cutting
-        val CMD_LINE_FEED = byteArrayOf(0x0A)                     // Line feed
         val CMD_MULTIPLE_LINE_FEED = byteArrayOf(0x0A, 0x0A, 0x0A, 0x0A)  // Multiple line feeds
         val CMD_CUT_PAPER = byteArrayOf(0x1D, 0x56, 0x00)         // GS V 0 - Full cut
     }

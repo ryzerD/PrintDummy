@@ -7,6 +7,8 @@ import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Formatter
+import java.util.Locale
+
 class PrintLogger(context: Context) {
     private val logDir: String =
         context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)?.absolutePath + "/print_logs"
@@ -21,8 +23,8 @@ class PrintLogger(context: Context) {
     fun debug(format: String, vararg args: Any) {
         try {
             val date = Date()
-            val timeFormat = SimpleDateFormat("HH:mm:ss.SSS")
-            val dateFormat = SimpleDateFormat("yyyyMMdd")
+            val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+            val dateFormat = SimpleDateFormat("yyyyMMdd", Locale.US)
 
             val logMessage = timeFormat.format(date) + " " + Formatter().format(format, *args)
                 .toString() + "\r\n"

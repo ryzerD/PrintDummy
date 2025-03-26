@@ -11,7 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class PrinterManager(private val context: Context) {
+class PrinterManager(context: Context) {
     private val usbManager: UsbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
     fun findAvailablePorts(): List<UsbDevice> {
@@ -181,7 +181,7 @@ class PrinterManager(private val context: Context) {
             return true
         }
 
-        val deviceName = device.deviceName ?: ""
+        val deviceName = device.deviceName
         val productName = device.productName ?: ""
 
         return deviceName.contains(AppConstants.Usb.PRINTER_NAME_PM801, ignoreCase = true) ||
@@ -343,14 +343,14 @@ class PrinterManager(private val context: Context) {
         )
 
         for (i in 0 until device.interfaceCount) {
-            val iface = device.getInterface(i)
+            val `interface` = device.getInterface(i)
             Log.d(
                 AppConstants.LogTags.PRINTER_MANAGER,
-                "Interface $i: Class ${iface.interfaceClass}, Subclass ${iface.interfaceSubclass}, Protocol ${iface.interfaceProtocol}, Endpoint count: ${iface.endpointCount}"
+                "Interface $i: Class ${`interface`.interfaceClass}, Subclass ${`interface`.interfaceSubclass}, Protocol ${`interface`.interfaceProtocol}, Endpoint count: ${`interface`.endpointCount}"
             )
 
-            for (j in 0 until iface.endpointCount) {
-                val endpoint = iface.getEndpoint(j)
+            for (j in 0 until `interface`.endpointCount) {
+                val endpoint = `interface`.getEndpoint(j)
                 val direction = if (endpoint.direction == UsbConstants.USB_DIR_OUT) "OUT" else "IN"
                 val type = when (endpoint.type) {
                     UsbConstants.USB_ENDPOINT_XFER_BULK -> "BULK"
