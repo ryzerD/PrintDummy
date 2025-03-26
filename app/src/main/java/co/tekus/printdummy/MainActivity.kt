@@ -1,6 +1,5 @@
 package co.tekus.printdummy
 
-import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,42 +12,27 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.annotation.RequiresApi
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import co.tekus.printdummy.ui.theme.PrintDummyTheme
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class MainActivity : ComponentActivity() {
-    private val serialPorts = mutableStateOf<List<UsbDevice>>(emptyList())
-    private lateinit var printerManager: PrinterManager
-    private lateinit var usbManager: UsbManager
-    private val mainScope = CoroutineScope(Dispatchers.Main)
-    private lateinit var printLogger: PrintLogger
 
+    private val viewModel: PrinterViewModel by viewModels()
+
+    /**
+     * BroadcastReceiver that handles USB permission responses.
+     */
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (AppConstants.Usb.ACTION_USB_PERMISSION == intent.action) {
                 synchronized(this) {
+                    // Extract USB device from intent, handling API level differences
                     val device: UsbDevice? =
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             intent.getParcelableExtra(
@@ -61,14 +45,16 @@ class MainActivity : ComponentActivity() {
                         }
 
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                        // Permission granted, proceed with scanning
                         device?.let {
                             Log.d(
                                 AppConstants.LogTags.MAIN_ACTIVITY,
                                 "Permission granted for device: ${it.deviceName}"
                             )
-                            scanForUsbDevices()
+                            viewModel.scanForUsbDevices()
                         }
                     } else {
+                        // Permission denied, log the event
                         Log.d(
                             AppConstants.LogTags.MAIN_ACTIVITY,
                             "Permission denied for device: ${device?.deviceName}"
@@ -82,194 +68,62 @@ class MainActivity : ComponentActivity() {
     @RequiresApi(Build.VERSION_CODES.O)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        printerManager = PrinterManager(this)
-        usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        printLogger = PrintLogger(this)
 
+        // Register for USB permission broadcasts
+        registerUsbReceiver()
+
+        // Observe print status changes
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.printStatus.collect { status ->
+                    status?.let {
+                        when (it) {
+                            is PrinterViewModel.PrintStatus.Success -> {
+                                Toast.makeText(this@MainActivity, it.message, Toast.LENGTH_SHORT)
+                                    .show()
+                            }
+
+                            is PrinterViewModel.PrintStatus.Error -> {
+                                Toast.makeText(this@MainActivity, it.message, Toast.LENGTH_SHORT)
+                                    .show()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Scan for connected USB devices on startup
+        viewModel.scanForUsbDevices()
+
+        // Set up the UI with Jetpack Compose
+        setContent {
+            val devices = viewModel.usbDevices.collectAsState().value
+            val selectedDevice = viewModel.selectedDevice.collectAsState().value
+
+            PrintDummyTheme {
+                PrinterDemoUI(
+                    serialPorts = devices.size,
+                    printSample = viewModel::printSample,
+                    scanForUsbDevices = viewModel::scanForUsbDevices,
+                    devices = devices,
+                    selectedDevice = selectedDevice,
+                    onDeviceSelected = viewModel::onDeviceSelected
+                )
+            }
+        }
+    }
+
+    private fun registerUsbReceiver() {
         val filter = IntentFilter(AppConstants.Usb.ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(usbReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
             Log.w(
                 AppConstants.LogTags.MAIN_ACTIVITY,
                 AppConstants.Messages.DEBUG_PERMISSION_WARNING
             )
             registerReceiver(usbReceiver, filter)
-        }
-
-        scanForUsbDevices()
-
-        setContent {
-            PrintDummyTheme {
-                PrinterDemoUI()
-            }
-        }
-    }
-
-    @Composable
-    fun PrinterDemoUI() {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = "Printer Demo",
-                    style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier.padding(bottom = 24.dp)
-                )
-
-                Button(
-                    onClick = { printSample() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                ) {
-                    Text("Print Test Receipt")
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Button(
-                    onClick = { scanForUsbDevices() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                ) {
-                    Text("Scan for USB Devices")
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Connected devices: ${serialPorts.value.size}",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        }
-    }
-
-    private fun scanForUsbDevices() {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val devices = printerManager.findAvailablePorts()
-                Log.d(
-                    AppConstants.LogTags.MAIN_ACTIVITY,
-                    String.format(AppConstants.Messages.DEBUG_DEVICES_FOUND, devices.size)
-                )
-
-                devices.forEach { device ->
-                    printerManager.debugUsbDevice(device)
-                }
-
-                val permissionIntent = PendingIntent.getBroadcast(
-                    this@MainActivity,
-                    0,
-                    Intent(AppConstants.Usb.ACTION_USB_PERMISSION),
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        PendingIntent.FLAG_MUTABLE
-                    } else {
-                        0
-                    }
-                )
-
-                devices.forEach { device ->
-                    if (!usbManager.hasPermission(device)) {
-                        usbManager.requestPermission(device, permissionIntent)
-                    }
-                }
-
-                mainScope.launch {
-                    serialPorts.value = devices
-                }
-
-                if (devices.isEmpty()) {
-                    Log.d(
-                        AppConstants.LogTags.MAIN_ACTIVITY,
-                        AppConstants.Messages.DEBUG_NO_DEVICES
-                    )
-                    mainScope.launch {
-                        Toast.makeText(
-                            this@MainActivity,
-                            AppConstants.Messages.ERROR_NO_USB_DEVICES,
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(
-                    AppConstants.LogTags.MAIN_ACTIVITY,
-                    "Error scanning USB devices: ${e.message}",
-                    e
-                )
-                mainScope.launch {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Error: ${e.message}",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-        }
-    }
-
-    private fun printSample() {
-        if (serialPorts.value.isEmpty()) {
-            Toast.makeText(this, AppConstants.Messages.ERROR_NO_USB_DEVICES, Toast.LENGTH_SHORT)
-                .show()
-            return
-        }
-
-        val printerDevice = printerManager.findPrinterDevice(serialPorts.value)
-
-        if (printerDevice == null) {
-            Toast.makeText(
-                this,
-                AppConstants.Messages.ERROR_NO_COMPATIBLE_PRINTER,
-                Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-
-        val deviceName = printerDevice.productName ?: printerDevice.deviceName
-        Toast.makeText(
-            this,
-            String.format(AppConstants.Messages.MSG_PRINT_SENDING, deviceName),
-            Toast.LENGTH_SHORT
-        ).show()
-
-        val dateFormatter =
-            SimpleDateFormat(AppConstants.DemoContent.DATE_FORMAT, Locale.getDefault())
-        val currentDate = dateFormatter.format(Date())
-        val textToPrint = String.format(AppConstants.DemoContent.RECEIPT_TEMPLATE, currentDate)
-
-        Log.d(
-            AppConstants.LogTags.MAIN_ACTIVITY,
-            String.format(AppConstants.Messages.DEBUG_PRINTING_TO, printerDevice.deviceName)
-        )
-
-        printLogger.debug("Printing to device: %s", printerDevice.deviceName)
-
-        CoroutineScope(Dispatchers.IO).launch {
-            printerManager.printText(
-                text = textToPrint,
-                availablePorts = serialPorts.value
-            ) { success, message ->
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
-                    printLogger.debug(
-                        "Print result: %s - %s",
-                        if (success) "SUCCESS" else "FAILURE",
-                        message
-                    )
-                }
-            }
         }
     }
 

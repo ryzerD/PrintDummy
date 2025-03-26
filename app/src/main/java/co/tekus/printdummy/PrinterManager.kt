@@ -11,14 +11,34 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/**
+ * PrinterManager handles all USB thermal printer operations including device discovery,
+ * printer selection, connection management, and printing functionality.
+ * Supports both generic printers and specific PM801 model.
+ */
 class PrinterManager(context: Context) {
     private val usbManager: UsbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
+    /**
+     * Retrieves all connected USB devices.
+     * @return List of available USB devices
+     */
     fun findAvailablePorts(): List<UsbDevice> {
         return usbManager.deviceList.values.toList()
     }
 
+    /**
+     * Identifies a printer device from the list of available USB devices.
+     * Search strategy:
+     * 1. First by USB_CLASS_PRINTER interface
+     * 2. Then by known printer names
+     * 3. Finally falls back to the first device if nothing matches
+     *
+     * @param devices List of USB devices to search
+     * @return First compatible printer device or null if none found
+     */
     fun findPrinterDevice(devices: List<UsbDevice>): UsbDevice? {
+        // First, try to find a device with a printer interface class
         for (device in devices) {
             for (i in 0 until device.interfaceCount) {
                 if (device.getInterface(i).interfaceClass == AppConstants.Usb.USB_CLASS_PRINTER) {
@@ -31,6 +51,7 @@ class PrinterManager(context: Context) {
             }
         }
 
+        // Second, try to find a device with a printer name
         for (device in devices) {
             val productName = device.productName ?: ""
             if (productName.contains(AppConstants.Usb.PRINTER_NAME_PRN, ignoreCase = true) ||
@@ -45,155 +66,193 @@ class PrinterManager(context: Context) {
             }
         }
 
+        // Finally, fallback to the first device if available
         return if (devices.isNotEmpty()) devices[0] else null
     }
 
+    /**
+     * Sends text to a printer device for printing.
+     * Manages the entire print process including:
+     * - Finding a suitable printer
+     * - Connecting to the printer
+     * - Sending initialization commands
+     * - Breaking text into appropriate chunks for printing
+     * - Notifying completion status
+     *
+     * @param text The text content to print
+     * @param availablePorts List of available USB devices
+     * @param onComplete Callback for print completion status (success/failure, message)
+     */
     suspend fun printText(
         text: String,
         availablePorts: List<UsbDevice>,
         onComplete: (Boolean, String) -> Unit
     ) {
         if (availablePorts.isEmpty()) {
-            Log.e(AppConstants.LogTags.PRINTER_MANAGER, "No devices provided for printing")
-            withContext(Dispatchers.Main) {
-                onComplete(false, AppConstants.Messages.ERROR_NO_DEVICES)
-            }
+            handleNoDevicesError(onComplete)
             return
         }
 
         try {
-            val printer = findPrinterDevice(availablePorts) ?: availablePorts[0]
-            Log.d(
-                AppConstants.LogTags.PRINTER_MANAGER,
-                String.format(AppConstants.Messages.DEBUG_PRINTING_TO, printer.deviceName)
-            )
-            debugUsbDevice(printer)
-
-            val isPM801 = isPM801Printer(printer)
-            Log.d(
-                AppConstants.LogTags.PRINTER_MANAGER,
-                String.format(AppConstants.Messages.DEBUG_IS_PM801, isPM801)
-            )
-
+            val printer = selectPrinter(availablePorts)
             val (usbInterface, endpoint) = findPrinterInterfaceAndEndpoint(printer)
             if (usbInterface == null || endpoint == null) {
-                Log.e(
-                    AppConstants.LogTags.PRINTER_MANAGER,
-                    AppConstants.Messages.ERROR_NO_INTERFACE
-                )
-                withContext(Dispatchers.Main) {
-                    onComplete(false, AppConstants.Messages.ERROR_NO_INTERFACE)
-                }
+                handleNoInterfaceError(onComplete)
                 return
             }
 
-            Log.d(
-                AppConstants.LogTags.PRINTER_MANAGER,
-                "Found interface ${usbInterface.id} and endpoint ${endpoint.address}"
-            )
-
-            val connection = usbManager.openDevice(printer)
-            if (connection == null) {
-                Log.e(
-                    AppConstants.LogTags.PRINTER_MANAGER,
-                    AppConstants.Messages.ERROR_CANNOT_CONNECT
-                )
-                withContext(Dispatchers.Main) {
-                    onComplete(false, AppConstants.Messages.ERROR_CANNOT_CONNECT)
-                }
-                return
-            }
-
-            val claimed = connection.claimInterface(usbInterface, true)
-            if (!claimed) {
-                Log.e(
-                    AppConstants.LogTags.PRINTER_MANAGER,
-                    AppConstants.Messages.ERROR_CANNOT_CLAIM
-                )
-                connection.close()
-                withContext(Dispatchers.Main) {
-                    onComplete(false, AppConstants.Messages.ERROR_CANNOT_CLAIM)
-                }
-                return
-            }
-
+            val connection = establishConnection(printer, usbInterface, onComplete) ?: return
             initializePrinter(connection, endpoint)
+            val commands = createGenericPrinterCommands(text)
+            val (success, message) = sendCommands(connection, usbInterface, endpoint, commands)
+            notifyCompletion(success, message, onComplete)
+        } catch (e: Exception) {
+            handlePrintException(e, onComplete)
+        }
+    }
 
-            val commands = if (isPM801) {
-                createPM801PrinterCommands(text)
-            } else {
-                createGenericPrinterCommands(text)
-            }
+    private suspend fun handleNoDevicesError(onComplete: (Boolean, String) -> Unit) {
+        Log.e(AppConstants.LogTags.PRINTER_MANAGER, "No devices provided for printing")
+        withContext(Dispatchers.Main) {
+            onComplete(false, AppConstants.Messages.ERROR_NO_DEVICES)
+        }
+    }
 
-            var successCount = 0
-            var failCount = 0
+    private fun selectPrinter(availablePorts: List<UsbDevice>): UsbDevice {
+        val printer = findPrinterDevice(availablePorts) ?: availablePorts[0]
+        Log.d(
+            AppConstants.LogTags.PRINTER_MANAGER,
+            String.format(AppConstants.Messages.DEBUG_PRINTING_TO, printer.deviceName)
+        )
+        debugUsbDevice(printer)
+        return printer
+    }
 
-            for (index in commands.indices) {
-                val command = commands[index]
-                Log.d(
-                    AppConstants.LogTags.PRINTER_MANAGER,
-                    "Sending command ${index + 1}/${commands.size}"
-                )
+    private suspend fun handleNoInterfaceError(onComplete: (Boolean, String) -> Unit) {
+        Log.e(AppConstants.LogTags.PRINTER_MANAGER, AppConstants.Messages.ERROR_NO_INTERFACE)
+        withContext(Dispatchers.Main) {
+            onComplete(false, AppConstants.Messages.ERROR_NO_INTERFACE)
+        }
+    }
 
-                val sent = connection.bulkTransfer(
-                    endpoint,
-                    command,
-                    command.size,
-                    AppConstants.Timing.TIMEOUT_COMMAND
-                )
-                if (sent < 0) {
-                    failCount++
-                } else {
-                    successCount++
-                }
+    private suspend fun establishConnection(
+        printer: UsbDevice,
+        usbInterface: UsbInterface,
+        onComplete: (Boolean, String) -> Unit
+    ): UsbDeviceConnection? {
+        val connection = usbManager.openDevice(printer)
+        if (connection == null) {
+            handleConnectionError(onComplete)
+            return null
+        }
 
-                Thread.sleep(AppConstants.Timing.DELAY_COMMANDS)
-            }
+        val claimed = connection.claimInterface(usbInterface, true)
+        if (!claimed) {
+            handleClaimError(connection, onComplete)
+            return null
+        }
 
-            connection.releaseInterface(usbInterface)
-            connection.close()
+        return connection
+    }
 
-            val success = failCount == 0
-            val message = when {
-                success -> AppConstants.Messages.MSG_PRINT_SUCCESS
-                successCount > 0 -> AppConstants.Messages.MSG_PRINT_PARTIAL
-                else -> AppConstants.Messages.MSG_PRINT_FAILURE
-            }
+    private suspend fun handleConnectionError(onComplete: (Boolean, String) -> Unit) {
+        Log.e(AppConstants.LogTags.PRINTER_MANAGER, AppConstants.Messages.ERROR_CANNOT_CONNECT)
+        withContext(Dispatchers.Main) {
+            onComplete(false, AppConstants.Messages.ERROR_CANNOT_CONNECT)
+        }
+    }
 
+    private suspend fun handleClaimError(
+        connection: UsbDeviceConnection,
+        onComplete: (Boolean, String) -> Unit
+    ) {
+        Log.e(AppConstants.LogTags.PRINTER_MANAGER, AppConstants.Messages.ERROR_CANNOT_CLAIM)
+        connection.close()
+        withContext(Dispatchers.Main) {
+            onComplete(false, AppConstants.Messages.ERROR_CANNOT_CLAIM)
+        }
+    }
+
+    private suspend fun sendCommands(
+        connection: UsbDeviceConnection,
+        usbInterface: UsbInterface,
+        endpoint: UsbEndpoint,
+        commands: List<ByteArray>
+    ): Pair<Boolean, String> {
+        var successCount = 0
+        var failCount = 0
+
+        for (index in commands.indices) {
+            val command = commands[index]
             Log.d(
                 AppConstants.LogTags.PRINTER_MANAGER,
-                "Print completed with $failCount failures out of ${commands.size} commands"
+                "Sending command ${index + 1}/${commands.size}"
             )
 
-            withContext(Dispatchers.Main) {
-                onComplete(success, message)
+            val sent = connection.bulkTransfer(
+                endpoint,
+                command,
+                command.size,
+                AppConstants.Timing.TIMEOUT_COMMAND
+            )
+            if (sent < 0) {
+                failCount++
+            } else {
+                successCount++
             }
-        } catch (e: Exception) {
-            Log.e(AppConstants.LogTags.PRINTER_MANAGER, "Error during printing: ${e.message}", e)
-            withContext(Dispatchers.Main) {
-                onComplete(false, "Error: ${e.message}")
-            }
+
+            Thread.sleep(AppConstants.Timing.DELAY_COMMANDS)
+        }
+
+        connection.releaseInterface(usbInterface)
+        connection.close()
+
+        val success = failCount == 0
+        val message = when {
+            success -> AppConstants.Messages.MSG_PRINT_SUCCESS
+            successCount > 0 -> AppConstants.Messages.MSG_PRINT_PARTIAL
+            else -> AppConstants.Messages.MSG_PRINT_FAILURE
+        }
+
+        Log.d(
+            AppConstants.LogTags.PRINTER_MANAGER,
+            "Print completed with $failCount failures out of ${commands.size} commands"
+        )
+
+        return Pair(success, message)
+    }
+
+    private suspend fun notifyCompletion(
+        success: Boolean,
+        message: String,
+        onComplete: (Boolean, String) -> Unit
+    ) {
+        withContext(Dispatchers.Main) {
+            onComplete(success, message)
         }
     }
 
-    private fun isPM801Printer(device: UsbDevice): Boolean {
-        if (device.vendorId == AppConstants.Usb.VENDOR_ID_PM801 && device.productId == AppConstants.Usb.PRODUCT_ID_PM801) {
-            return true
+    private suspend fun handlePrintException(e: Exception, onComplete: (Boolean, String) -> Unit) {
+        Log.e(AppConstants.LogTags.PRINTER_MANAGER, "Error during printing: ${e.message}", e)
+        withContext(Dispatchers.Main) {
+            onComplete(false, "Error: ${e.message}")
         }
-
-        val deviceName = device.deviceName
-        val productName = device.productName ?: ""
-
-        return deviceName.contains(AppConstants.Usb.PRINTER_NAME_PM801, ignoreCase = true) ||
-                productName.contains(AppConstants.Usb.PRINTER_NAME_PM801, ignoreCase = true) ||
-                productName.contains(AppConstants.Usb.PRINTER_NAME_PRN, ignoreCase = true) ||
-                productName.contains(AppConstants.Usb.PRINTER_NAME_VIRTUAL_PRN, ignoreCase = true)
     }
 
+    /**
+     * Initializes the printer with essential setup commands:
+     * - Reset printer to clear buffer and set default state
+     * - Set line spacing for consistent output
+     * - Set character set to PC437 (standard US/European characters)
+     *
+     * @param connection USB connection to printer
+     * @param endpoint Output endpoint for sending commands
+     */
     private fun initializePrinter(connection: UsbDeviceConnection, endpoint: UsbEndpoint) {
         try {
             Log.d(AppConstants.LogTags.PRINTER_MANAGER, AppConstants.Messages.DEBUG_PRINTER_INIT)
 
+            // Reset printer to clear buffer and previous settings
             connection.bulkTransfer(
                 endpoint,
                 AppConstants.PrinterCommands.CMD_RESET,
@@ -202,12 +261,15 @@ class PrinterManager(context: Context) {
             )
             Thread.sleep(AppConstants.Timing.DELAY_INIT)
 
+            // Set line spacing for consistent output
             connection.bulkTransfer(
                 endpoint,
                 AppConstants.PrinterCommands.CMD_LINE_SPACING,
                 AppConstants.PrinterCommands.CMD_LINE_SPACING.size,
                 AppConstants.Timing.TIMEOUT_OTHER_COMMANDS
             )
+
+            // Set character set to PC437 (standard US/European characters)
             connection.bulkTransfer(
                 endpoint,
                 AppConstants.PrinterCommands.CMD_CHARSET_PC437,
@@ -215,6 +277,7 @@ class PrinterManager(context: Context) {
                 AppConstants.Timing.TIMEOUT_OTHER_COMMANDS
             )
 
+            // Allow time for printer to process initialization
             Thread.sleep(AppConstants.Timing.DELAY_INIT)
         } catch (e: Exception) {
             Log.w(
@@ -224,39 +287,26 @@ class PrinterManager(context: Context) {
         }
     }
 
-    private fun createPM801PrinterCommands(text: String): List<ByteArray> {
-        val commands = mutableListOf<ByteArray>()
-
-        commands.add(AppConstants.PrinterCommands.CMD_RESET)
-        commands.add(AppConstants.PrinterCommands.CMD_NORMAL_TEXT)
-
-        val textBytes = text.toByteArray()
-
-        var position = 0
-        while (position < textBytes.size) {
-            val remaining = textBytes.size - position
-            val size =
-                if (remaining > AppConstants.Data.CHUNK_SIZE_PM801) AppConstants.Data.CHUNK_SIZE_PM801 else remaining
-            val chunk = textBytes.copyOfRange(position, position + size)
-            commands.add(chunk)
-            position += size
-        }
-
-        commands.add(AppConstants.PrinterCommands.CMD_MULTIPLE_LINE_FEED)
-        commands.add(AppConstants.PrinterCommands.CMD_CUT_PAPER)
-
-        return commands
-    }
-
+    /**
+     * Creates a sequence of printer commands for generic (non-PM801) thermal printers.
+     * Includes:
+     * - Reset and initialization commands
+     * - Text content broken into printer-appropriate chunks
+     * - Line feed and paper cut commands
+     *
+     * @param text Content to print
+     * @return List of byte arrays containing printer commands
+     */
     private fun createGenericPrinterCommands(text: String): List<ByteArray> {
         val commands = mutableListOf<ByteArray>()
 
+        // Initialize printer with standard commands
         commands.add(AppConstants.PrinterCommands.CMD_RESET)
         commands.add(AppConstants.PrinterCommands.CMD_NORMAL_TEXT)
         commands.add(AppConstants.PrinterCommands.CMD_CHARSET_PC437)
 
+        // Break text into manageable chunks to prevent buffer overflow
         val textBytes = text.toByteArray()
-
         var position = 0
         while (position < textBytes.size) {
             val remaining = textBytes.size - position
@@ -267,13 +317,26 @@ class PrinterManager(context: Context) {
             position += size
         }
 
+        // Add finishing commands
         commands.add(AppConstants.PrinterCommands.CMD_MULTIPLE_LINE_FEED)
         commands.add(AppConstants.PrinterCommands.CMD_CUT_PAPER)
 
         return commands
     }
 
+    /**
+     * Locates the appropriate interface and endpoint for printer communication.
+     * Search strategy:
+     * 1. First by printer class with bulk output endpoint
+     * 2. Then any interface with bulk output endpoint
+     * 3. Then any interface with any output endpoint
+     * 4. Fallback to interface 0, endpoint 0
+     *
+     * @param device USB device to examine
+     * @return Pair of UsbInterface and UsbEndpoint, or null values if none found
+     */
     private fun findPrinterInterfaceAndEndpoint(device: UsbDevice): Pair<UsbInterface?, UsbEndpoint?> {
+        // Priority 1: Find printer class interface with bulk output endpoint
         for (i in 0 until device.interfaceCount) {
             val usbInterface = device.getInterface(i)
 
@@ -295,6 +358,7 @@ class PrinterManager(context: Context) {
             }
         }
 
+        // Priority 2: Find any interface with bulk output endpoint
         for (i in 0 until device.interfaceCount) {
             val usbInterface = device.getInterface(i)
             for (j in 0 until usbInterface.endpointCount) {
@@ -309,6 +373,7 @@ class PrinterManager(context: Context) {
             }
         }
 
+        // Priority 3: Find any interface with any output endpoint
         for (i in 0 until device.interfaceCount) {
             val usbInterface = device.getInterface(i)
             for (j in 0 until usbInterface.endpointCount) {
@@ -320,6 +385,7 @@ class PrinterManager(context: Context) {
             }
         }
 
+        // Priority 4: Fallback to first interface and endpoint
         if (device.interfaceCount > 0) {
             val usbInterface = device.getInterface(0)
             if (usbInterface.endpointCount > 0) {
@@ -331,9 +397,19 @@ class PrinterManager(context: Context) {
             }
         }
 
+        // No suitable interface/endpoint found
         return Pair(null, null)
     }
 
+    /**
+     * Logs detailed information about a USB device for debugging purposes.
+     * Includes:
+     * - Device identifiers and names
+     * - Interface details
+     * - Endpoint specifications
+     *
+     * @param device USB device to inspect
+     */
     fun debugUsbDevice(device: UsbDevice) {
         Log.d(
             AppConstants.LogTags.PRINTER_MANAGER,
